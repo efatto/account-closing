@@ -663,6 +663,28 @@ class AccountFiscalyearClosingMapping(models.Model):
                     "date": date,
                     "partner_id": partner_id,
                 }
+                if (
+                    account.currency_id
+                    and account.currency_id
+                    != self.fyc_config_id.fyc_id.company_id.currency_id
+                ):
+                    amount_currency = sum(account_lines.mapped("amount_currency"))
+                    if balance != 0 and amount_currency != 0:
+                        if (
+                            balance < 0 < amount_currency
+                            or balance > 0 > amount_currency
+                        ):
+                            raise ValidationError(_(
+                                "Currency amount %s of account %s has an invalid sign "
+                                "as amount is %s!") % (
+                                    amount_currency, account.name, balance
+                                )
+                            )
+                    move_line.update(
+                        currency_id=account.currency_id.id,
+                        amount_currency=amount_currency
+                        * -1,
+                    )
             else:
                 balance = 0
         return balance, move_line
