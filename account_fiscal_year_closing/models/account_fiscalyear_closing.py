@@ -3,6 +3,7 @@
 import logging
 
 from dateutil.relativedelta import relativedelta
+from collections import defaultdict
 
 from odoo import _, api, exceptions, fields, models
 from odoo.exceptions import ValidationError
@@ -201,7 +202,7 @@ class AccountFiscalyearClosing(models.Model):
         if not self.closing_template_id:
             return
         config_obj = self.env["account.fiscalyear.closing.config"]
-        tmpl = self.closing_template_id.with_context(force_company=self.company_id.id)
+        tmpl = self.closing_template_id.with_company(self.company_id.id)
         self.check_draft_moves = tmpl.check_draft_moves
         for tmpl_config in tmpl.move_config_ids:
             self.move_config_ids += config_obj.new(self._prepare_config(tmpl_config))
@@ -334,8 +335,35 @@ class AccountFiscalyearClosing(models.Model):
         for closing in self:
             for move_config in closing.move_config_ids.sorted("sequence"):
                 move_config.move_id.action_post()
+            # get reversed moves to reconcile in case of unreconciled option
+            configs = closing.move_config_ids.filtered(
+                lambda x: x.closing_type_default == "unreconciled")
+            move = self.env["account.move"]
+            reverse_move = self.env["account.move"]
+            for config in configs:
+                if config.code in configs.mapped("inverse"):
+                    if config.move_id:
+                        move = config.move_id
+                    reverse = configs.filtered(
+                        lambda x: x.inverse == config.code
+                    )
+                    if reverse.move_id:
+                        reverse_move = reverse.move_id
+                    if move and reverse_move:
+                        self.reconcile_reversed_moves(move, reverse_move)
         self.write({"state": "posted"})
         return True
+
+    def reconcile_reversed_moves(self, move, reverse_move):
+        # reuse part of function _reverse_moves() in account_move.py of module account
+        group = defaultdict(list)
+        for line in (move.line_ids + reverse_move.line_ids).filtered(
+                lambda l: not l.reconciled):
+            group[(line.account_id, line.currency_id)].append(line.id)
+        for (account, dummy), line_ids in group.items():
+            if account.reconcile or account.internal_type == 'liquidity':
+                self.env['account.move.line'].browse(line_ids).with_context(
+                    move_reverse_cancel=True).reconcile()
 
     def button_open_moves(self):
         # Return an action for showing moves
